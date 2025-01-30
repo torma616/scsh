@@ -1,0 +1,36 @@
+# The goal here is to With be able to use the same host alias to connect
+# regardless of whether the user is was local or remote, like how it works in
+# ssh, and allow a user on MacOS to connect to VNC via the command line.
+#
+# In this example, if we find a match on original host, we're checking the
+# current wi-fi SSID and comparing it to a known value - "Home's Wifi SSID". If
+# the values match (and therefore we're on the same network as our
+# destination), we use the configuration settings in the Match block. Because
+# the Match block is the first block in this config, it has the highest
+# priority when it comes to setting values (if it finds a match).
+#
+# Beacuse the Host block is second, it will only set configuration values if
+# the Match block above it fails to - specifically for homeserver, HomeServer,
+# and homeServer, as those are in the list for the Match block above it too. In
+# the case of those hostnames, the Host block will only match if the wi-fi SSID
+# doesn't match the known value, in the exec part of the Match block above it.
+#
+# Please note the remote-specific host entries - the ones ending in -remote,
+# in the Host block. These will allow a user to initiate a remote connection
+# even if they're on their home network. This is useful in my setup at least,
+# because when I'm home I connect over .local and when I'm remote I connect via
+# my DDNS provider. Additionally, note how the port for remote connections is
+# set differently from the default, to account for port forwarding.
+#
+# Finally, if no match is made, the tool will attempt to initiate a connection
+# directly to whatever string was passed into it (parsed into username,
+# hostname and port),
+
+Match originalhost 'homeserver,HomeServer,homeServer' exec "[[ $(ipconfig getsummary en0 | awk -F ' SSID : ' '/ SSID : / {print $2}') == 'Home'\''s WiFi SSID' ]]"
+    User johndoe
+    HostName MyComputer.local
+
+Host homeserver HomeServer homeServer homeserver-remote HomeServer-remote homeServer-remote
+    User johndoe
+    HostName MyHomeNetwork.duckdns.org
+    Port 55555

@@ -1,0 +1,207 @@
+#! /usr/bin/env bash
+
+# Default: logging disabled
+VERBOSE=0
+PRINT_ONLY=0
+
+# Parse command line options
+while getopts "vp" opt; do
+    case $opt in
+    v) VERBOSE=1 ;;    # Enable logging
+    p) PRINT_ONLY=1 ;; #Print output to STDOUT instead of initiating connection
+    *)
+        echo "Usage: $0 [-v] [-p] <host>" >&2
+        exit 1
+        ;;
+    esac
+done
+shift $((OPTIND - 1)) # Remove options from arguments
+
+# Logging function
+log() {
+    [[ $VERBOSE -eq 1 ]] && echo "$@" >&2
+}
+
+# Get the provided host alias from remaining arguments
+provided_host="$1"
+if [[ -z "$provided_host" ]]; then
+    log "Usage: $0 [-v] <host>"
+    exit 1
+fi
+
+log "Starting with host: $provided_host"
+
+# Parse user/host/port from command line input using regex
+if [[ "$provided_host" =~ ^([^:@]+@)?([^:@]+)(:([0-9]+))?$ ]]; then
+    user_part="${BASH_REMATCH[1]%@*}" # Remove trailing @ if present
+    host_part="${BASH_REMATCH[2]}"
+    port_part="${BASH_REMATCH[4]}"
+else
+    log "Invalid host format: $provided_host"
+    exit 1
+fi
+
+# Set initial values from command line
+resolved_user=$(whoami) # Default to current user
+[[ -n "$user_part" ]] && resolved_user="$user_part"
+resolved_host="$host_part"
+resolved_port="5900" # VNC default
+[[ -n "$port_part" ]] && resolved_port="$port_part"
+
+log "Initial values from command line:"
+log "  User: $resolved_user"
+log "  Host: $resolved_host"
+log "  Port: $resolved_port"
+
+# Read the config file
+config_file="$HOME/.scsh/config"
+found_match=0
+
+if [[ -f "$config_file" ]]; then
+    log "Using config file: $config_file"
+
+    # Load config file lines into an array
+    config_lines=()
+    while IFS= read -r line; do
+        config_lines+=("$line")
+    done <"$config_file"
+
+    process_block() {
+        log "Processing $1 block: $2"
+    }
+
+    # Process each line in the config
+    for ((i = 0; i < ${#config_lines[@]}; i++)); do
+        line="${config_lines[$i]}"
+        line_trimmed=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+        # Skip comments and empty lines
+        [[ -z "$line_trimmed" || "$line_trimmed" == \#* ]] && continue
+
+        # Check for Match or Host block start
+        if [[ "$line_trimmed" == "Match "* || "$line_trimmed" == "Host "* ]]; then
+            block_type=$(awk '{print $1}' <<<"$line_trimmed")
+            block_content=$(awk '{$1=""; print $0}' <<<"$line_trimmed" | sed -e 's/^ //')
+
+            # Collect all lines belonging to this block
+            block_lines=("$line_trimmed")
+            j=$((i + 1))
+            while ((j < ${#config_lines[@]})); do
+                next_line="${config_lines[$j]}"
+                if [[ "$next_line" =~ ^[[:space:]]+ ]]; then
+                    next_line_trimmed=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$next_line")
+                    block_lines+=("$next_line_trimmed")
+                    ((j++))
+                else
+                    break
+                fi
+            done
+            i=$((j - 1)) # Skip processed lines
+
+            # Process Match block
+            if [[ "$block_type" == "Match" ]]; then
+                log "Found Match block"
+                originalhost_list_str=$(echo "$block_content" | sed -n "s/.*originalhost '\([^']*\)'.*/\1/p")
+                exec_command=$(echo "$block_content" | sed -n 's/.*exec "\([^"]*\)".*/\1/p')
+
+                log "Match block details:"
+                log "  Originalhost list: $originalhost_list_str"
+                log "  Exec command: $exec_command"
+
+                if [[ -z "$originalhost_list_str" || -z "$exec_command" ]]; then
+                    log "  Invalid Match block, skipping"
+                    continue
+                fi
+
+                IFS=',' read -ra originalhost_list <<<"$originalhost_list_str"
+                if printf '%s\n' "${originalhost_list[@]}" | grep -qxF "$provided_host"; then
+                    log "  Host matches originalhost list"
+                    if eval "$exec_command"; then
+                        log "  Exec command succeeded"
+                        current_host=""
+                        current_user=""
+                        current_port=""
+                        for block_line in "${block_lines[@]:1}"; do
+                            key=$(awk '{print $1}' <<<"$block_line")
+                            value=$(awk '{$1=""; print $0}' <<<"$block_line" | sed -e 's/^ //')
+                            log "  Processing block line: $key=$value"
+                            case "$key" in
+                            HostName) current_host="$value" ;;
+                            User) current_user="$value" ;;
+                            Port) current_port="$value" ;;
+                            esac
+                        done
+                        [[ -n "$current_host" ]] && resolved_host="$current_host"
+                        [[ -n "$current_user" ]] && resolved_user="$current_user"
+                        [[ -n "$current_port" ]] && resolved_port="$current_port"
+                        found_match=1
+                        log "Match block resolved values:"
+                        log "  Host: $resolved_host"
+                        log "  User: $resolved_user"
+                        log "  Port: $resolved_port"
+                        break 2
+                    else
+                        log "  Exec command failed"
+                    fi
+                fi
+
+            # Process Host block
+            elif [[ "$block_type" == "Host" ]]; then
+                log "Found Host block"
+                read -ra host_patterns <<<"$block_content"
+                log "Host patterns: ${host_patterns[*]}"
+                for pattern in "${host_patterns[@]}"; do
+                    if [[ "$provided_host" == $pattern ]]; then
+                        log "  Host matches pattern: $pattern"
+                        current_host=""
+                        current_user=""
+                        current_port=""
+                        for block_line in "${block_lines[@]:1}"; do
+                            key=$(awk '{print $1}' <<<"$block_line")
+                            value=$(awk '{$1=""; print $0}' <<<"$block_line" | sed -e 's/^ //')
+                            log "  Processing block line: $key=$value"
+                            case "$key" in
+                            HostName) current_host="$value" ;;
+                            User) current_user="$value" ;;
+                            Port) current_port="$value" ;;
+                            esac
+                        done
+                        [[ -n "$current_host" ]] && resolved_host="$current_host"
+                        [[ -n "$current_user" ]] && resolved_user="$current_user"
+                        [[ -n "$current_port" ]] && resolved_port="$current_port"
+                        found_match=1
+                        log "Host block resolved values:"
+                        log "  Host: $resolved_host"
+                        log "  User: $resolved_user"
+                        log "  Port: $resolved_port"
+                        break 2
+                    fi
+                done
+            fi
+        fi
+    done
+else
+    log "No config file found, using command-line values"
+fi
+
+if [[ "$resolved_host" == *.local ]]; then
+    resolved_host+="."
+fi
+
+# Construct final host string
+if [[ "$resolved_port" == "5900" ]]; then
+    final_host="${resolved_user}@${resolved_host}"
+else
+    final_host="${resolved_user}@${resolved_host}:${resolved_port}"
+fi
+
+log "Resulting connection string: $final_host"
+
+# Final output decision
+if [[ $PRINT_ONLY -eq 1 ]]; then
+    log "Printing resolved hostname:"
+    echo "$final_host"
+else
+    log "Initiating VNC connection with $final_host"
+    open "vnc://$final_host"
+fi
