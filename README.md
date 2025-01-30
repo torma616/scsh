@@ -1,6 +1,6 @@
 # scsh
 
-`scsh` is a helper utility to initiate VNC connections from the command line on MacOS, using a similar configuration file to `ssh`.
+`scsh` (**sc**reen**sh**are) is a helper utility to initiate VNC connections from the command line on MacOS, using a similar configuration file to `ssh`.
 
 The original goal was to be able to use the same `Host` alias to connect to my home server regardless of if I'm local or remote. This tool aims to bring that functionality to VNC as well.
 
